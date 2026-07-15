@@ -19,7 +19,7 @@ conda activate pia_snakemake
 snakemake --cores all
 ```
 
-Snakemake will build every `results/opsins/{transcriptome}.opsins.fasta` requested for the translated transcriptomes (*.pep) placed in the folder `resources`.
+Snakemake will build every `results/opsins/{transcriptome}.opsins.fasta` requested for the translated transcriptomes (`{transcriptome}.pep`) placed in the folder `resources`.
 
 ## Pipeline overview
 
