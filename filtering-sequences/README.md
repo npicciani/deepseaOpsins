@@ -35,3 +35,43 @@ from de Vivo et al. 2023). Small enough to run the whole workflow in seconds.
 It contains two sequences entered twice under different headers:
 `Pseudopsin_MolCephalopodaOctopusvulgaris_2483` = `Pseudopsin_XM029798206OcsiOCTOCE`
 and `Pseudopsin_MolCephalopodaOctopusbimaculoides_2422` = `Pseudopsin_XM014924517OcbiOCTOCE`.
+
+## How the filter works
+
+`docs/method.md` is the full account -- what each criterion measures, why the
+profile replaced Pfam 7tm_1, and the held-out validation. In short, a sequence
+is kept only if **both** hold:
+
+- **A. Profile-HMM coverage.** Aligned to the profile with `hmmalign` alongside
+  bovine rhodopsin (UniProt P02699), each of rhodopsin's seven TM spans must be
+  covered by real residues in >= `hmm_cov` of its match columns.
+- **B. DeepTMHMM topology.** A predicted helix must overlap each of the seven
+  expected positions.
+
+## Setup
+
+```bash
+conda env create -f envs/filtering.yaml     # snakemake + hmmalign
+```
+
+## Running
+
+```bash
+cd filtering-sequences
+conda activate filtering
+snakemake --cores 4 -n      # dry run
+snakemake --cores 4
+```
+
+Outputs per sample, under `results/<sample>/`:
+
+| file | |
+|---|---|
+| `opsins_7tm.faa` | keep |
+| `opsins_7tm_review.faa` | criteria disagree |
+| `opsins_7tm_dropped.faa` | removed; `drop_reason` in the report says why |
+| `opsins_7tm_no_prediction.faa` | no topology record |
+| `opsins_7tm_report.csv` | per-sequence coverage, helix pattern, verdict |
+| `work_7tm/` | de-gapped input and the `hmmalign` Stockholm |
+
+Adding a dataset is one line under `samples:` in `config/config.yaml`.

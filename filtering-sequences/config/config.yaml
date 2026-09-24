@@ -1,0 +1,24 @@
+# filtering-sequences -- configuration
+#
+# All paths are relative to this folder; run snakemake from inside it.
+
+# name -> input protein FASTA. Every sample gets its own results/<name>/ tree.
+samples:
+  devivo2023: input/pseudopsins_melatonin_trichoplax_outgroups_devivo2023.fasta
+
+# Criterion A profile. Pin a dated file -- the report is only interpretable
+# against a known profile. See README.md before swapping it.
+profile: resources/opsin_profile/animalOpsins_090426.hmm
+
+# Where the bovine rhodopsin reference (P02699, 7 annotated TM spans) is cached.
+refdir: resources/ref
+
+filter:
+  hmm_cov: 0.7        # min fraction of match columns covered, per TM window
+  dtm_mode: position  # `position` (helix must overlap each window) | `count`
+  min_tm: 7           # only used when dtm_mode == count
+  max_tm: 7           # drop above this many predicted helices; 0 disables
+  max_nterm: 200      # drop above this many residues before TM1; 0 disables
+  # Reserved from snakemake's core budget. filter_7tm.py accepts --threads but
+  # does not yet pass it to hmmalign, so this only affects scheduling today.
+  threads: 1

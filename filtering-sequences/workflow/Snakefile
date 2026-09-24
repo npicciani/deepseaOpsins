@@ -1,0 +1,81 @@
+# 7-TM opsin filtering.
+#
+#   P02699 ──> fetch_reference ─┐
+#   profile HMM ────────────────┼──> filter_7tm ──> keep / dropped / report
+#   input FASTA ────────────────┘
+#
+# This stage runs criterion A only: profile-HMM coverage of each of rhodopsin's
+# seven TM windows. Criterion B (DeepTMHMM topology) is added separately.
+#
+# Run from inside filtering-sequences/ with the `filtering` env active
+# (envs/filtering.yaml); it provides snakemake and hmmalign.
+
+import re
+from pathlib import Path
+
+from snakemake.exceptions import WorkflowError
+
+configfile: "config/config.yaml"
+
+SCRIPTS = Path(workflow.basedir) / "scripts"
+SAMPLES = config["samples"]
+FILT = config["filter"]
+REFJSON = str(Path(config["refdir"]) / "P02699.json")
+
+if not SAMPLES:
+    raise WorkflowError("config['samples'] is empty -- nothing to filter")
+
+
+wildcard_constraints:
+    sample="|".join(map(re.escape, SAMPLES)),
+
+
+rule all:
+    input:
+        expand("results/{sample}/opsins_7tm.faa", sample=SAMPLES),
+        expand("results/{sample}/opsins_7tm_report.csv", sample=SAMPLES),
+
+
+rule fetch_reference:
+    """Bovine rhodopsin P02699 -- the seven TM windows the filter is read in."""
+    output:
+        json=REFJSON,
+    log:
+        "logs/fetch_reference.log",
+    shell:
+        "python {SCRIPTS}/fetch_reference.py -o {output.json} &> {log}"
+
+
+rule filter_7tm:
+    """Criterion A: profile coverage of each TM window.
+
+    filter_7tm.py writes review/dropped/no_prediction only when non-empty; the
+    workflow declares all four and creates the empty ones, so an empty file
+    means that class is empty -- never a half-finished run, since snakemake
+    deletes the outputs of a failed job.
+    """
+    input:
+        fasta=lambda w: SAMPLES[w.sample],
+        profile=config["profile"],
+        ref=REFJSON,
+    output:
+        keep="results/{sample}/opsins_7tm.faa",
+        review="results/{sample}/opsins_7tm_review.faa",
+        dropped="results/{sample}/opsins_7tm_dropped.faa",
+        nopred="results/{sample}/opsins_7tm_no_prediction.faa",
+        report="results/{sample}/opsins_7tm_report.csv",
+    params:
+        prefix=lambda w: f"results/{w.sample}/opsins_7tm",
+        workdir=lambda w: f"results/{w.sample}/work_7tm",
+        refdir=config["refdir"],
+        cov=FILT["hmm_cov"],
+    threads: FILT["threads"]
+    log:
+        "logs/{sample}/filter_7tm.log",
+    shell:
+        "python {SCRIPTS}/filter_7tm.py {input.fasta} -o {params.prefix} "
+        "  --profile {input.profile} --refdir {params.refdir} "
+        "  --hmm-cov {params.cov} "
+        "  --workdir {params.workdir} --threads {threads} &> {log}; "
+        "for f in {output.review} {output.dropped} {output.nopred}; do "
+        "  [ -e \"$f\" ] || : > \"$f\"; done"
