@@ -83,10 +83,15 @@ Outputs per sample, under `results/<sample>/`:
 | `opsins_7tm_dropped.faa` | removed; `drop_reason` in the report says why |
 | `opsins_7tm_no_prediction.faa` | no topology record |
 | `opsins_7tm_report.csv` | per-sequence coverage, helix pattern, verdict |
+| `filter_summary.tsv` | counts by verdict, by drop reason, and by criterion |
 | `work_7tm/` | de-gapped input and the `hmmalign` Stockholm |
 | `dtm_out/TMRs.gff3` | this dataset's topology, assembled from the store |
 | `dtm_plan/` | which sequences this run needed to predict (`plan.json`) |
 | `dtm_runs/batch_XXX/` | raw DeepTMHMM output per batch, kept as a log |
+
+In `filter_summary.tsv` the `drop_reason` block partitions the drops
+exclusively; the `criterion_met` block counts sequences meeting each rule and
+therefore **overlaps** -- a sequence tripping two rules is counted under both.
 
 Adding a dataset is one line under `samples:` in `config/config.yaml`.
 

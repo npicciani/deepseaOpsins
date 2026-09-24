@@ -7,7 +7,7 @@
 #                                            └──> dtm_out/TMRs.gff3
 #                                                     │
 #   profile HMM ─┬─> filter_7tm <──────────────────────┘
-#   P02699 ──────┘       └──> keep / review / dropped / report
+#   P02699 ──────┘       └──> keep / review / dropped / report ──> summarize
 #
 # The profile HMM is an input, not a product: see README.md.
 #
@@ -64,6 +64,7 @@ rule all:
     input:
         expand("results/{sample}/opsins_7tm.faa", sample=SAMPLES),
         expand("results/{sample}/opsins_7tm_report.csv", sample=SAMPLES),
+        expand("results/{sample}/filter_summary.tsv", sample=SAMPLES),
 
 
 rule fetch_reference:
@@ -191,3 +192,15 @@ rule filter_7tm:
         "for f in {output.review} {output.dropped} {output.nopred}; do "
         "  [ -e \"$f\" ] || : > \"$f\"; done"
 
+
+rule summarize:
+    """Verdict, exclusive drop_reason, and overlapping per-criterion counts."""
+    input:
+        report="results/{sample}/opsins_7tm_report.csv",
+    output:
+        tsv="results/{sample}/filter_summary.tsv",
+    log:
+        "logs/{sample}/summarize.log",
+    shell:
+        "python {SCRIPTS}/summarize.py {input.report} -o {output.tsv} "
+        "  --sample {wildcards.sample} &> {log}"
