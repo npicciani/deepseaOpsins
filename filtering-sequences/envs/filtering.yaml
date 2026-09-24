@@ -1,0 +1,11 @@
+# Everything the workflow needs except DeepTMHMM itself, which is licensed
+# and installed separately (see README.md).
+#   conda env create -f envs/filtering.yaml
+name: filtering
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.12
+  - snakemake-minimal>=8
+  - hmmer=3.4

@@ -1,0 +1,206 @@
+# 7-TM opsin filtering -- DeepTMHMM (criterion B) + the two-criteria filter.
+#
+#   input FASTA ──> dtm_plan (checkpoint: what is NOT already predicted?)
+#                      └──> dtm_batch × N (local DeepTMHMM, GPU) ──> store
+#                                                                      │
+#   input FASTA ──────────────────────> dtm_collect <──────────────────┘
+#                                            └──> dtm_out/TMRs.gff3
+#                                                     │
+#   profile HMM ─┬─> filter_7tm <──────────────────────┘
+#   P02699 ──────┘       └──> keep / review / dropped / report ──> summarize
+#
+# The profile HMM is an input, not a product: see README.md.
+#
+# THE STORE IS THE CACHE, NOT THE BATCH. DeepTMHMM predicts each sequence
+# independently -- a batch only amortises loading ESM-1b -- so predictions are
+# stored one per sequence, keyed by a hash of the sequence itself
+# (workflow/scripts/dtm_store.py), in a store shared by every sample. A batch
+# is transient: planned fresh each run from whatever the store lacks.
+#
+# Run from inside filtering-sequences/ with the `filtering` env active. The
+# DeepTMHMM launcher brings its own environment.
+
+import os
+import re
+from pathlib import Path
+
+from snakemake.exceptions import WorkflowError
+
+configfile: "config/config.yaml"
+
+SCRIPTS = Path(workflow.basedir) / "scripts"
+
+SAMPLES = config["samples"]
+DTM = config["deeptmhmm"]
+FILT = config["filter"]
+CACHE = config["dtm_cache"]
+REFJSON = str(Path(config["refdir"]) / "P02699.json")
+
+if not SAMPLES:
+    raise WorkflowError("config['samples'] is empty -- nothing to filter")
+
+GPUS = ",".join(str(g) for g in DTM.get("gpus", []))
+
+
+wildcard_constraints:
+    sample="|".join(map(re.escape, SAMPLES)),
+    b=r"\d{3}",
+
+
+def planned_batches(w):
+    """Sentinels for the batches this sample's plan turned out to need.
+
+    Resolving this forces the checkpoint. On a run where every sequence is
+    already stored the plan writes no batch FASTAs, this returns [], and
+    dtm_collect proceeds straight from the store without running DeepTMHMM.
+    """
+    plan_dir = checkpoints.dtm_plan.get(sample=w.sample).output[0]
+    ids = glob_wildcards(os.path.join(plan_dir, "batch_{b}.faa")).b
+    return expand("results/{sample}/dtm_runs/batch_{b}/.ingested",
+                  sample=w.sample, b=sorted(ids))
+
+
+rule all:
+    input:
+        expand("results/{sample}/opsins_7tm.faa", sample=SAMPLES),
+        expand("results/{sample}/opsins_7tm_report.csv", sample=SAMPLES),
+        expand("results/{sample}/filter_summary.tsv", sample=SAMPLES),
+
+
+rule fetch_reference:
+    """Bovine rhodopsin P02699 -- the seven TM windows both criteria are read in."""
+    output:
+        json=REFJSON,
+    log:
+        "logs/fetch_reference.log",
+    shell:
+        "python {SCRIPTS}/fetch_reference.py -o {output.json} &> {log}"
+
+
+checkpoint dtm_plan:
+    """Hash the input, ask the store what is missing, cut only that into batches.
+
+    A checkpoint rather than a rule because the work set depends on the store's
+    contents at run time, not on anything visible when the DAG is built.
+    """
+    input:
+        fasta=lambda w: SAMPLES[w.sample],
+    output:
+        plan=directory("results/{sample}/dtm_plan"),
+    params:
+        cache=CACHE,
+        batch_size=DTM["batch_size"],
+        max_len=DTM["max_len"],
+    log:
+        "logs/{sample}/dtm_plan.log",
+    shell:
+        "python {SCRIPTS}/dtm_plan.py {input.fasta} "
+        "  --cache-dir {params.cache} --plan-dir {output.plan} "
+        "  -b {params.batch_size} --max-len {params.max_len} &> {log}"
+
+
+rule dtm_batch:
+    """One local DeepTMHMM run, split into per-sequence store records.
+
+    Each job claims a free GPU from deeptmhmm.gpus through a lock file, so
+    concurrent jobs never share a device; `--resources gpu=N` should equal the
+    number of listed GPUs. The sentinel is written last, after every record has
+    landed, so a half-finished batch never looks complete.
+    """
+    input:
+        batch="results/{sample}/dtm_plan/batch_{b}.faa",
+    output:
+        sentinel="results/{sample}/dtm_runs/batch_{b}/.ingested",
+    params:
+        cache=CACHE,
+        rundir=lambda w: f"results/{w.sample}/dtm_runs/batch_{w.b}",
+        launcher=DTM["bin"],
+        gpus=GPUS,
+        source=DTM["source"],
+    resources:
+        gpu=1,
+    retries: 1
+    log:
+        "logs/{sample}/dtm_batch_{b}.log",
+    shell:
+        "python {SCRIPTS}/dtm_batch.py {input.batch} "
+        "  --cache-dir {params.cache} --run-dir {params.rundir} "
+        "  --deeptmhmm {params.launcher} --gpus '{params.gpus}' "
+        "  --lock-dir .gpu_locks --source '{params.source}' "
+        "  --sentinel {output.sentinel} &> {log}"
+
+
+rule dtm_collect:
+    """Reattach this dataset's headers to the stored predictions."""
+    input:
+        fasta=lambda w: SAMPLES[w.sample],
+        sentinels=planned_batches,
+    output:
+        gff3="results/{sample}/dtm_out/TMRs.gff3",
+        line3="results/{sample}/dtm_out/predicted_topologies.3line",
+    params:
+        cache=CACHE,
+        max_len=DTM["max_len"],
+    log:
+        "logs/{sample}/dtm_collect.log",
+    shell:
+        "python {SCRIPTS}/dtm_collect.py {input.fasta} "
+        "  --cache-dir {params.cache} --out-gff3 {output.gff3} "
+        "  --out-3line {output.line3} --max-len {params.max_len} &> {log}"
+
+
+rule filter_7tm:
+    """Criterion A (profile coverage) x criterion B (predicted topology).
+
+    review/dropped/no_prediction are written by filter_7tm.py only when
+    non-empty; the workflow declares all four so the DAG is honest about what a
+    run produces, and creates the empty ones. An empty file means that class is
+    empty, not that the rule half-ran -- Snakemake deletes the outputs of a
+    failed job.
+    """
+    input:
+        fasta=lambda w: SAMPLES[w.sample],
+        profile=config["profile"],
+        ref=REFJSON,
+        dtm="results/{sample}/dtm_out/TMRs.gff3",
+    output:
+        keep="results/{sample}/opsins_7tm.faa",
+        review="results/{sample}/opsins_7tm_review.faa",
+        dropped="results/{sample}/opsins_7tm_dropped.faa",
+        nopred="results/{sample}/opsins_7tm_no_prediction.faa",
+        report="results/{sample}/opsins_7tm_report.csv",
+    params:
+        prefix=lambda w: f"results/{w.sample}/opsins_7tm",
+        dtmdir=lambda w: f"results/{w.sample}/dtm_out",
+        workdir=lambda w: f"results/{w.sample}/work_7tm",
+        refdir=config["refdir"],
+        cov=FILT["hmm_cov"],
+        mode=FILT["dtm_mode"],
+        min_tm=FILT["min_tm"],
+        max_tm=FILT["max_tm"],
+        max_nterm=FILT["max_nterm"],
+    threads: FILT["threads"]
+    log:
+        "logs/{sample}/filter_7tm.log",
+    shell:
+        "python {SCRIPTS}/filter_7tm.py {input.fasta} -o {params.prefix} "
+        "  --profile {input.profile} --refdir {params.refdir} "
+        "  --dtm-dir {params.dtmdir} --dtm-mode {params.mode} "
+        "  --hmm-cov {params.cov} --min-tm {params.min_tm} "
+        "  --max-tm {params.max_tm} --max-nterm {params.max_nterm} "
+        "  --workdir {params.workdir} --threads {threads} &> {log}; "
+        "for f in {output.review} {output.dropped} {output.nopred}; do "
+        "  [ -e \"$f\" ] || : > \"$f\"; done"
+
+
+rule summarize:
+    """Verdict, exclusive drop_reason, and overlapping per-criterion counts."""
+    input:
+        report="results/{sample}/opsins_7tm_report.csv",
+    output:
+        tsv="results/{sample}/filter_summary.tsv",
+    log:
+        "logs/{sample}/summarize.log",
+    shell:
+        "python {SCRIPTS}/summarize.py {input.report} -o {output.tsv} "
+        "  --sample {wildcards.sample} &> {log}"
