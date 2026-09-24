@@ -10,3 +10,6 @@ resources/dtm_cache/
 
 # Cached from UniProt by the fetch_reference rule.
 resources/ref/
+
+# GPU claim locks held by running DeepTMHMM batches.
+.gpu_locks/

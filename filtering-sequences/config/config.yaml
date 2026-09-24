@@ -13,6 +13,26 @@ profile: resources/opsin_profile/animalOpsins_090426.hmm
 # Where the bovine rhodopsin reference (P02699, 7 annotated TM spans) is cached.
 refdir: resources/ref
 
+# Per-sequence DeepTMHMM predictions, keyed by a hash of the sequence, shared
+# across every sample. Gitignored: data, not code. results/ is safe to delete;
+# this is the one thing here that costs GPU time to rebuild.
+dtm_cache: resources/dtm_cache
+
+deeptmhmm:
+  # Launcher for the locally installed, academically licensed DeepTMHMM 1.0.
+  # `deeptmhmm <fasta> <outdir>`; on deepedna2 it is /usr/local/bin/deeptmhmm.
+  bin: deeptmhmm
+  # Written into every stored record, so a mixed store says where each came from.
+  source: DeepTMHMM 1.0 local
+  # CUDA devices a batch may claim. Match with `--resources gpu=<count>`.
+  gpus: [0, 1]
+  # Each run loads ESM-1b (~2.6 GB) once, so batches should be large.
+  # Changing this invalidates nothing -- batches are planned fresh each run.
+  batch_size: 1000
+  # Longer sequences are skipped (-> `no_prediction`) rather than predicted.
+  # DeepTMHMM itself handles >1022 aa by embedding in 1022-residue windows.
+  max_len: 4000
+
 filter:
   hmm_cov: 0.7        # min fraction of match columns covered, per TM window
   dtm_mode: position  # `position` (helix must overlap each window) | `count`

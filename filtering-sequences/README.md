@@ -54,14 +54,25 @@ is kept only if **both** hold:
 conda env create -f envs/filtering.yaml     # snakemake + hmmalign
 ```
 
+DeepTMHMM 1.0 is academically licensed and is **not** in this repo or the env.
+It must be installed on the host with a launcher taking
+`deeptmhmm <fasta> <outdir>`; point `deeptmhmm.bin` in `config/config.yaml` at
+it. On deepedna2 it is installed system-wide at `/usr/local/bin/deeptmhmm`
+(program in `/opt/deeptmhmm`), and uses the GPUs.
+
 ## Running
 
 ```bash
 cd filtering-sequences
 conda activate filtering
-snakemake --cores 4 -n      # dry run
-snakemake --cores 4
+snakemake --cores 4 --resources gpu=2 -n      # dry run
+snakemake --cores 4 --resources gpu=2
 ```
+
+`gpu=2` lets two DeepTMHMM batches run at once, one per device listed under
+`deeptmhmm.gpus`; each batch claims a free device through a lock file, so two
+jobs never share a card. Snakemake treats an undeclared resource as
+unlimited, so leave the flag off and batches run `--cores` wide.
 
 Outputs per sample, under `results/<sample>/`:
 
@@ -73,5 +84,74 @@ Outputs per sample, under `results/<sample>/`:
 | `opsins_7tm_no_prediction.faa` | no topology record |
 | `opsins_7tm_report.csv` | per-sequence coverage, helix pattern, verdict |
 | `work_7tm/` | de-gapped input and the `hmmalign` Stockholm |
+| `dtm_out/TMRs.gff3` | this dataset's topology, assembled from the store |
+| `dtm_plan/` | which sequences this run needed to predict (`plan.json`) |
+| `dtm_runs/batch_XXX/` | raw DeepTMHMM output per batch, kept as a log |
 
 Adding a dataset is one line under `samples:` in `config/config.yaml`.
+
+## DeepTMHMM: one prediction per sequence
+
+```
+input FASTA ──> dtm_plan (checkpoint: what is NOT already predicted?)
+                   └──> dtm_batch × N (DeepTMHMM, 1 GPU each) ──> resources/dtm_cache/
+input FASTA ──────────────────────> dtm_collect <────────────────────┘
+                                         └──> dtm_out/TMRs.gff3 ──> filter_7tm
+```
+
+DeepTMHMM predicts each sequence independently; a batch only amortises loading
+ESM-1b. So predictions are cached **per sequence**, in `resources/dtm_cache/`,
+keyed by a sha1 of the sequence itself (uppercased, gaps stripped) rather than
+its header. That key is what DeepTMHMM actually saw, so:
+
+- adding five sequences to a dataset predicts five, not a whole batch;
+- a renamed header reuses its prediction, while a header reused for a changed
+  sequence misses the cache -- where a name-keyed cache would serve a stale
+  topology;
+- the same sequence under two headers is predicted once and reported under
+  both (the test input has two such pairs);
+- the store is shared across samples, so overlap between datasets is
+  predicted once.
+
+`dtm_plan` is a checkpoint because the work set depends on the store at run
+time. The cost is that `-n` shows the checkpoint first and the batch jobs only
+after it has run.
+
+Every record carries a `source` tag (`deeptmhmm.source` in the config), so a
+store holding predictions from more than one install says where each came
+from.
+
+**Long sequences.** ESM-1b takes at most 1,022 residues; DeepTMHMM embeds longer
+sequences in consecutive 1,022-residue windows rather than truncating them, so
+the whole sequence is predicted. Anything over `max_len` is skipped and lands
+in `no_prediction`.
+
+### Recovery
+
+`dtm_batch.py` exits non-zero on failure so snakemake sees it. Each record is
+written atomically and the batch sentinel is written last, so a batch killed
+midway keeps the sequences it finished, and the next run predicts only the
+rest.
+
+A `dtm_store.FormatError` means batch output did not look like DeepTMHMM
+wrote it. It is fatal on purpose: a silently mis-parsed topology would enter
+the store and be trusted by every later run.
+
+### Importing existing DeepTMHMM output
+
+`dtm_ingest_legacy.py` loads batch directories produced outside the workflow
+-- including earlier runs on the BioLib web service -- so existing predictions
+are reused. No FASTA is needed; `predicted_topologies.3line` carries the
+sequences.
+
+```bash
+python workflow/scripts/dtm_ingest_legacy.py -n <batch dirs...> --cache-dir resources/dtm_cache
+```
+
+Imported records are tagged `biolib:DTU/DeepTMHMM` unless `--source` says
+otherwise. It never overwrites a stored record: a sequence already stored with
+a *different* prediction is reported as a conflict (non-zero exit), since two
+runs disagreeing means the model differed between them.
+
+On the 30-sequence test input, the local install on deepedna2 and the BioLib
+service produced byte-identical `TMRs.gff3` output.
