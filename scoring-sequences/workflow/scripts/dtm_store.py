@@ -49,10 +49,21 @@ SOURCE = "DeepTMHMM 1.0 local"
 
 # ------------------------------------------------------------------ keying
 
+def normalise(seq):
+    """The sequence exactly as DeepTMHMM is given it: uppercase, with gap
+    characters and stop codons ('*') removed.
+
+    dtm_plan.py writes this form into the batch FASTAs and seq_key hashes it,
+    so the key is always the hash of what DeepTMHMM actually saw. Translated
+    transcriptomes often end ORFs in '*'; stripping a terminal stop leaves every
+    residue coordinate unchanged.
+    """
+    return seq.upper().replace("-", "").replace(".", "").replace("*", "")
+
+
 def seq_key(seq):
-    """sha1 of the sequence as DeepTMHMM saw it: uppercase, no gaps."""
-    norm = seq.upper().replace("-", "").replace(".", "").replace("*", "")
-    return hashlib.sha1(norm.encode()).hexdigest()
+    """sha1 of the sequence as DeepTMHMM saw it (see normalise)."""
+    return hashlib.sha1(normalise(seq).encode()).hexdigest()
 
 
 def record_path(cache_dir, key):

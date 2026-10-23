@@ -64,7 +64,8 @@ def main():
         if dtm_store.has(a.cache_dir, key):
             n_cached += 1
         else:
-            missing.append((key, name, seq))
+            # hand DeepTMHMM exactly what the key hashes (no gaps, no '*')
+            missing.append((key, name, dtm_store.normalise(seq)))
 
     # a stale plan from an earlier run would be silently re-executed
     for old in os.listdir(a.plan_dir):
