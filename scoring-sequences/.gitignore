@@ -1,0 +1,15 @@
+# Everything the workflow produces is rebuildable from inputs + config.
+results/
+logs/
+.snakemake/
+__pycache__/
+
+# The per-sequence DeepTMHMM store is paid cloud compute and must be BACKED
+# UP -- but it is data, not code, and does not belong in git history.
+resources/dtm_cache/
+
+# Cached from UniProt by the fetch_reference rule.
+resources/ref/
+
+# GPU claim locks held by running DeepTMHMM batches.
+.gpu_locks/
