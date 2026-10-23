@@ -49,10 +49,21 @@ SOURCE = "DeepTMHMM 1.0 local"
 
 # ------------------------------------------------------------------ keying
 
+def normalise(seq):
+    """The sequence exactly as DeepTMHMM is given it: uppercase, with gap
+    characters and stop codons ('*') removed.
+
+    dtm_plan.py writes this form into the batch FASTAs and seq_key hashes it,
+    so the key is always the hash of what DeepTMHMM actually saw. Translated
+    transcriptomes often end ORFs in '*'; stripping a terminal stop leaves every
+    residue coordinate unchanged.
+    """
+    return seq.upper().replace("-", "").replace(".", "").replace("*", "")
+
+
 def seq_key(seq):
-    """sha1 of the sequence as DeepTMHMM saw it: uppercase, no gaps."""
-    norm = seq.upper().replace("-", "").replace(".", "").replace("*", "")
-    return hashlib.sha1(norm.encode()).hexdigest()
+    """sha1 of the sequence as DeepTMHMM saw it (see normalise)."""
+    return hashlib.sha1(normalise(seq).encode()).hexdigest()
 
 
 def record_path(cache_dir, key):
@@ -122,7 +133,12 @@ def _commit_3line(out, block, path):
             f"{path}: expected a 3-line record (header, sequence, topology), "
             f"got {len(block)} lines starting {block[0][:60]!r}")
     # ">name | TM" -- the annotation after '|' is DeepTMHMM's class call
-    name = block[0][1:].strip().split("|")[0].strip().split()[0]
+    # DeepTMHMM writes ">NAME | CLASS". NAME may itself contain "|" (e.g.
+    # "CNI_Agal_eleg|SAMN02183323|101554c6g1i2.1"), so split on the LAST " | ".
+    header = block[0][1:].strip()
+    if " | " in header:
+        header = header.rpartition(" | ")[0]
+    name = header.split()[0]
     seq, topo = block[1].strip(), block[2].strip()
     if len(seq) != len(topo):
         raise FormatError(f"{path}: {name}: sequence is {len(seq)} residues but "

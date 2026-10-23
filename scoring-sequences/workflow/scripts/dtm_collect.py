@@ -58,7 +58,7 @@ def main():
             missing.append(key_name)
             continue
         out.append((key_name, dtm_store.load(a.cache_dir, key)))
-        seqs_by_name[key_name] = seq
+        seqs_by_name[key_name] = dtm_store.normalise(seq)
 
     if missing:
         sys.exit(f"{len(missing)} eligible sequence(s) absent from the store "

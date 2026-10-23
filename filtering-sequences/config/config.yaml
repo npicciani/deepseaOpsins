@@ -10,6 +10,10 @@ samples:
     report: ../scoring-sequences/results/devivo2023/report.csv
     sequences: ../scoring-sequences/results/devivo2023/sequences.faa
     meta: ../scoring-sequences/results/devivo2023/report.json
+  input_102326:
+    report: ../scoring-sequences/results/input_102326/report.csv
+    sequences: ../scoring-sequences/results/input_102326/sequences.faa
+    meta: ../scoring-sequences/results/input_102326/report.json
 
 # Every decision the filter makes. Changing any of these re-runs only the
 # filter -- seconds -- never the scoring.
