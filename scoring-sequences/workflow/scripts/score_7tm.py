@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
-"""Keep only opsin / GPCR protein sequences that span all seven transmembrane helices.
+"""Measure how completely each sequence spans the seven transmembrane helices.
 
-Two independent criteria are combined.
+This script MEASURES and does not decide. It writes one row per sequence
+holding every quantity the seven-TM filter is decided on, and applies no
+threshold. The decisions -- keep / review / drop -- are made from this report
+by the filtering-sequences workflow, so a threshold can be changed without
+re-running hmmalign or DeepTMHMM.
+
+Two independent measurements are made.
 
   A) Profile-HMM coverage (homology-aware, gives REGISTER).
      Sequences are aligned to a profile HMM with `hmmalign`, together with bovine
      rhodopsin (UniProt P02699) whose TM1-TM7 boundaries are annotated from
-     structure. Rhodopsin's TM spans are mapped onto the model, and each of the
-     seven windows must be covered by real residues above --hmm-cov.
+     structure. Rhodopsin's TM spans are mapped onto the model, and for each of
+     the seven windows the report gives the fraction of its match columns
+     covered by real residues (cov_TM1 .. cov_TM7, and their minimum).
 
      Coverage is computed over profile MATCH columns only. Insert columns are not
      comparable across sequences -- hmmalign places each sequence's inserted
@@ -19,19 +26,17 @@ Two independent criteria are combined.
      built by `hmmbuild`/`pyhmmer` from a plain alignment has `RF no`.
 
   B) DeepTMHMM topology (homology-free, gives PRESENCE).
-     DeepTMHMM predicts per-residue topology, so it yields both the NUMBER of
-     transmembrane helices and their COORDINATES. Two modes:
+     From DeepTMHMM's per-residue topology: the total number of predicted
+     helices, and which of the seven expected window positions a predicted
+     helix overlaps (helix_pattern, e.g. 1111110 = no helix at TM7). A sequence
+     with no DeepTMHMM record has has_topology = 0 and these columns blank.
 
-       --dtm-mode position  (default) a predicted helix must overlap each of the
-                            seven expected window positions. This is the
-                            like-for-like comparison against criterion A.
-       --dtm-mode count     total predicted helices >= --min-tm. Cheaper, but it
-                            conflates "has a TM7" with "is complete": a sequence
-                            missing TM1 has 6 helices AND an intact TM7, and a
-                            count rule cannot tell those apart.
+Also reported: residues before the TM1 window and after TM7, where any helix
+beyond the seven falls (N-terminal / interior / C-terminal), whether DeepTMHMM
+calls a signal peptide, and the residue in rhodopsin's K296 column.
 
-WHY THE PROFILE MATTERS (and why --rescue-tm7 is gone)
------------------------------------------------------
+WHY THE PROFILE MATTERS
+-----------------------
 Pfam 7tm_1 (PF00001) systematically under-calls TM7 in ctenophores. Its TM7
 columns carry high information content at the class-A NPxxY motif, which most
 ctenophore opsins lack (e.g. AFK83788.1 / Mnemiopsis opsin 1 reads WIIIY at
@@ -50,28 +55,23 @@ clade-inclusive opsin profile instead of PF00001:
     under-capture (helix present at TM7, profile misses it): 26 -> 0
     over-capture  (no helix at TM7, profile covers it)     :  0 -> 0
 
-An earlier version of this script carried a --rescue-tm7 flag that kept
-sequences whose only failing window was TM7. A profile that represents the
-clade removes the need for it, so the flag has been retired: a rescue rule
-lets a broken measurement stand and then overrides it, whereas the right
-profile fixes the measurement.
-
-Truncation control (205 sequences passing all seven windows AND carrying a
-helix at all seven positions): deleting TM7 gives a false-pass rate of 0/205
-for C-terminal truncation and 2/205 for internal excision. Both residual cases
-are the same protein entered twice, Mnemiopsis opsin 3 (AFK83790), whose
-downstream tail can slide into the vacated TM7 columns.
+Outputs
+-------
+    <outprefix>_report.csv     one row per scored sequence, measurements only
+    <outprefix>_sequences.faa  exactly the sequences in the report, gaps
+                               stripped -- the filter's FASTAs are cut from this
+    <outprefix>_report.json    what the report was measured against: profile
+                               (path + sha1), match columns per TM window,
+                               counts in and out
 
 Usage
 -----
-    python filter_7tm.py input.fasta -o opsins_7tm \\
+    python score_7tm.py input.fasta -o results/x/x \\
         --profile animalOpsins.hmm --dtm-dir dtm_out
-
-Omit --dtm-dir to run criterion A alone (fully local, no uploads).
-Omit --profile to fetch and use stock PF00001 (NOT recommended for ctenophores).
 """
 import argparse
 import csv
+import hashlib
 import glob
 import json
 import os
@@ -294,40 +294,36 @@ def extra_helix_locations(ranges, helices):
 
 # ---------------------------------------------------------------- main
 
+def sha1_file(path):
+    h = hashlib.sha1()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# Coverage is a fraction k/n with n ~ 20-25 match columns per window. Six
+# decimals keeps every such value distinct from any threshold it is not
+# exactly equal to, so a threshold applied to the report decides exactly as it
+# would on the unrounded value.
+COV_DECIMALS = 6
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("fasta", help="input protein FASTA (gaps are stripped)")
-    ap.add_argument("-o", "--outprefix", default="opsins_7tm")
+    ap.add_argument("-o", "--outprefix", required=True)
     ap.add_argument("--profile", default=None,
                     help="profile HMM to score against. Strongly recommended: a "
                          "clade-inclusive opsin profile. Default fetches stock "
                          "PF00001, which under-calls TM7 in ctenophores.")
-    ap.add_argument("--dtm-dir", default=None,
-                    help="directory of existing DeepTMHMM output (searched "
-                         "recursively for TMRs.gff3). Omit to use criterion A alone.")
-    ap.add_argument("--dtm-mode", choices=("position", "count"), default="position",
-                    help="how criterion B is evaluated (default: position)")
-    ap.add_argument("--hmm-cov", type=float, default=0.7,
-                    help="min fraction of each TM window's match columns covered")
-    ap.add_argument("--min-tm", type=int, default=7,
-                    help="min predicted helices for --dtm-mode count")
-    ap.add_argument("--max-tm", type=int, default=7,
-                    help="DROP sequences with more than this many predicted TM "
-                         "helices (default 7; drop_reason '>7_TM'). Note the count "
-                         "is DeepTMHMM's raw output: where it splits one helix into "
-                         "two adjacent calls the sequence really has seven but is "
-                         "reported as eight, and it is dropped. Set 0 to disable. "
-                         "Requires --dtm-dir.")
-    ap.add_argument("--max-nterm", type=int, default=200,
-                    help="DROP sequences with more than this many residues before "
-                         "the TM1 window (default 200; drop_reason "
-                         "'>200aa_before_TM1'). This is the fusion / mis-assembly "
-                         "filter: bovine rhodopsin has 36, and the p99 of a real "
-                         "opsin set is ~125. Set 0 to disable.")
+    ap.add_argument("--dtm-dir", required=True,
+                    help="directory of DeepTMHMM output (searched recursively "
+                         "for TMRs.gff3)")
     ap.add_argument("--refdir", default="ref")
     ap.add_argument("--workdir", default="work_7tm")
-    ap.add_argument("--threads", type=int, default=4)
+    ap.add_argument("--threads", type=int, default=1)
     a = ap.parse_args()
 
     recs = read_fasta(a.fasta)
@@ -346,17 +342,8 @@ def main():
     windows = tm_windows(aln, refname, ref_spans)
     print(f"match columns per TM window: {[len(w) for w in windows]}")
 
-    counts, intervals, dtm_regions = (parse_dtm(a.dtm_dir) if a.dtm_dir
-                                      else (None, None, None))
-    if counts is None:
-        print("DeepTMHMM : none found -- criterion A only")
-    else:
-        print(f"DeepTMHMM : records for {len(counts)} sequences "
-              f"(mode={a.dtm_mode})")
-        print(f"drop rules: >{a.max_tm} TM helices" if a.max_tm else
-              "drop rules: helix-count filter disabled", end="")
-        print(f", >{a.max_nterm} residues before TM1" if a.max_nterm
-              else ", N-terminal filter disabled")
+    counts, intervals, dtm_regions = parse_dtm(a.dtm_dir)
+    print(f"DeepTMHMM : records for {len(counts)} sequences")
 
     # the retinal-binding lysine column (rhodopsin K296) -- reported, not filtered
     # on: the input may deliberately carry non-opsin GPCRs as outgroups
@@ -368,71 +355,30 @@ def main():
                 k296_col = i
                 break
 
-    rows, keep, review, nopred, dropped = [], [], [], [], []
+    rows, scored, unaligned = [], [], []
     for n, s in clean:
         key = n.split()[0]
         if key not in aln:
+            unaligned.append(key)
             continue
-        cov = [sum(1 for c in w if aln[key][c].isalpha()) / len(w)
-               for w in windows]
-        pass_hmm = min(cov) >= a.hmm_cov
+        cov = [round(sum(1 for c in w if aln[key][c].isalpha()) / len(w),
+                     COV_DECIMALS) for w in windows]
 
-        ntm = counts.get(key) if counts is not None else None
+        has_topo = key in counts
+        ntm = counts[key] if has_topo else None
         hits = (helix_at_windows(aln[key], windows, intervals.get(key, []))
-                if (counts is not None and key in counts) else None)
-        if counts is None:
-            pass_dtm = None
-        elif ntm is None:
-            pass_dtm = None          # no record: a data gap, never a failure
-        elif a.dtm_mode == "count":
-            pass_dtm = ntm >= a.min_tm
-        else:
-            pass_dtm = all(hits)
-
+                if has_topo else None)
         ranges = window_residue_ranges(aln[key], windows)
         n_before = (ranges[0][0] - 1) if ranges[0] else None
         n_after = (len(s) - ranges[6][1]) if ranges[6] else None
         extras = (extra_helix_locations(ranges, intervals.get(key, []))
-                  if counts is not None and key in counts else None)
-        has_sp = (int(any(t == "signal" for t, _, _ in dtm_regions.get(key, [])))
-                  if dtm_regions is not None else "")
-
-        # Every reason a sequence is removed is recorded, and all removals share
-        # the single verdict "drop". A sequence can trip more than one rule --
-        # an incomplete core AND a large N-terminal region, say -- and then
-        # every applicable reason appears, joined by '+'.
-        #
-        #   <7_TM              both criteria call the 7TM core incomplete
-        #                      (profile coverage below --hmm-cov on at least one
-        #                      window AND no predicted helix at that position)
-        #   >7_TM              DeepTMHMM's raw helix count exceeds --max-tm
-        #   >Naa_before_TM1    more than --max-nterm residues precede the TM1
-        #                      window (the fusion / mis-assembly signature)
-        reasons = []
-        if counts is not None and pass_dtm is not None \
-                and not pass_hmm and not pass_dtm:
-            reasons.append("<7_TM")
-        if a.max_tm and ntm is not None and ntm > a.max_tm:
-            reasons.append(f">{a.max_tm}_TM")
-        if a.max_nterm and n_before is not None and n_before > a.max_nterm:
-            reasons.append(f">{a.max_nterm}aa_before_TM1")
-
-        if counts is None:
-            verdict = "keep" if pass_hmm else "drop"
-            if not pass_hmm:
-                reasons = ["<7_TM"]
-        elif pass_dtm is None:
-            verdict = "no_prediction"
-        elif reasons:
-            verdict = "drop"
-        elif pass_hmm and pass_dtm:
-            verdict = "keep"
-        else:
-            verdict = "review"
+                  if has_topo else None)
+        has_sp = int(any(t == "signal" for t, _, _ in dtm_regions.get(key, [])))
 
         row = dict(name=n, length=len(s))
-        row.update({f"cov_TM{i+1}": round(cov[i], 3) for i in range(7)})
-        row["min_cov"] = round(min(cov), 3)
+        row.update({f"cov_TM{i+1}": cov[i] for i in range(7)})
+        row["min_cov"] = min(cov)
+        row["has_topology"] = int(has_topo)
         row["n_tm_helices"] = "" if ntm is None else ntm
         row["windows_with_helix"] = "" if hits is None else sum(hits)
         row["helix_pattern"] = ("" if hits is None
@@ -441,51 +387,43 @@ def main():
         row["n_after_TM7"] = "" if n_after is None else n_after
         row["extra_helix_location"] = ("" if not extras
                                        else "+".join(sorted(set(extras))))
-        row["has_signal_peptide"] = has_sp
+        row["has_signal_peptide"] = has_sp if has_topo else ""
         row["res_at_K296"] = (aln[key][k296_col].upper()
                               if k296_col is not None else "")
-        row["pass_hmm"] = int(pass_hmm)
-        row["pass_deeptmhmm"] = "" if pass_dtm is None else int(pass_dtm)
-        row["drop_reason"] = "+".join(reasons)
-        row["verdict"] = verdict
         rows.append(row)
+        scored.append((n, s))
 
-        if verdict == "keep":
-            keep.append((n, s))
-        elif verdict == "review":
-            review.append((n, s))
-        elif verdict == "no_prediction":
-            nopred.append((n, s))
-        else:
-            # every removal, whatever the rule, lands in one file; the report's
-            # drop_reason column says which rule or rules removed each sequence
-            dropped.append((n, s))
+    if not rows:
+        sys.exit("no sequence aligned to the profile -- nothing to report")
 
-    write_fasta(f"{a.outprefix}.faa", keep)
-    if review:
-        write_fasta(f"{a.outprefix}_review.faa", review)
-    if nopred:
-        write_fasta(f"{a.outprefix}_no_prediction.faa", nopred)
-    if dropped:
-        write_fasta(f"{a.outprefix}_dropped.faa", dropped)
     with open(f"{a.outprefix}_report.csv", "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+        w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()),
+                           lineterminator="\n")
         w.writeheader()
         w.writerows(rows)
+    write_fasta(f"{a.outprefix}_sequences.faa", scored)
 
-    print(f"\nkept          : {len(keep)}  -> {a.outprefix}.faa")
-    print(f"review        : {len(review)}  -> {a.outprefix}_review.faa")
-    if dropped:
-        print(f"dropped       : {len(dropped)}  -> {a.outprefix}_dropped.faa")
-        by_reason = {}
-        for r in rows:
-            if r["verdict"] == "drop":
-                by_reason[r["drop_reason"]] = by_reason.get(r["drop_reason"], 0) + 1
-        for reason, cnt in sorted(by_reason.items(), key=lambda z: -z[1]):
-            print(f"                {cnt:4d}  {reason}")
-    if nopred:
-        print(f"no prediction : {len(nopred)}  -> {a.outprefix}_no_prediction.faa")
-    print(f"report        : {a.outprefix}_report.csv")
+    meta = {
+        "input": a.fasta,
+        "input_records": len(recs),
+        "non_empty": len(clean),
+        "scored": len(rows),
+        "unaligned": unaligned,
+        "with_topology": sum(r["has_topology"] for r in rows),
+        "profile": hmm,
+        "profile_sha1": sha1_file(hmm),
+        "reference": "UniProt P02699 (bovine rhodopsin)",
+        "match_columns_per_TM": [len(w) for w in windows],
+    }
+    with open(f"{a.outprefix}_report.json", "w") as fh:
+        json.dump(meta, fh, indent=2)
+        fh.write("\n")
+
+    print(f"\nscored        : {len(rows)}  -> {a.outprefix}_report.csv")
+    print(f"with topology : {meta['with_topology']}")
+    if unaligned:
+        print(f"NOT SCORED    : {len(unaligned)} did not align to the profile: "
+              f"{', '.join(unaligned[:5])}{' ...' if len(unaligned) > 5 else ''}")
     n_int = sum(1 for r in rows if "interior" in str(r["extra_helix_location"]))
     if n_int:
         print(f"\nNOTE: {n_int} sequences carry an extra TM helix INTERIOR to the "

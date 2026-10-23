@@ -2,6 +2,14 @@
 
 Part of [deepseaOpsins](../README.md).
 
+This workflow **measures**; it does not decide. For every sequence it writes a
+report of the quantities the seven-TM filter is decided on -- profile coverage
+of each TM window, DeepTMHMM's helix count and where the helices fall, the
+N-terminal length -- and applies no threshold.
+[`../filtering-sequences`](../filtering-sequences/) reads the report and makes
+the keep / review / drop calls. Everything costly (hmmalign, DeepTMHMM on the
+GPU) is here, so changing a threshold there never re-runs anything here.
+
 ## Resources
 
 `resources/opsin_profile/` holds the clade-inclusive opsin profile HMM that
@@ -36,17 +44,17 @@ It contains two sequences entered twice under different headers:
 `Pseudopsin_MolCephalopodaOctopusvulgaris_2483` = `Pseudopsin_XM029798206OcsiOCTOCE`
 and `Pseudopsin_MolCephalopodaOctopusbimaculoides_2422` = `Pseudopsin_XM014924517OcbiOCTOCE`.
 
-## How the filter works
+## What is measured
 
-`docs/method.md` is the full account -- what each criterion measures, why the
-profile replaced Pfam 7tm_1, and the held-out validation. In short, a sequence
-is kept only if **both** hold:
+`docs/method.md` is the full account -- what each measurement captures, why the
+profile replaced Pfam 7tm_1, and the held-out validation. In short:
 
-- **A. Profile-HMM coverage.** Aligned to the profile with `hmmalign` alongside
-  bovine rhodopsin (UniProt P02699), each of rhodopsin's seven TM spans must be
-  covered by real residues in >= `hmm_cov` of its match columns.
-- **B. DeepTMHMM topology.** A predicted helix must overlap each of the seven
-  expected positions.
+- **A. Profile-HMM coverage.** Each sequence is aligned to the profile with
+  `hmmalign` alongside bovine rhodopsin (UniProt P02699), and for each of
+  rhodopsin's seven TM spans the report gives the fraction of its match
+  columns covered by real residues.
+- **B. DeepTMHMM topology.** The number of predicted helices, and which of the
+  seven expected positions a predicted helix overlaps.
 
 ## Setup
 
@@ -78,22 +86,33 @@ Outputs per sample, under `results/<sample>/`:
 
 | file | |
 |---|---|
-| `opsins_7tm.faa` | keep |
-| `opsins_7tm_review.faa` | criteria disagree |
-| `opsins_7tm_dropped.faa` | removed; `drop_reason` in the report says why |
-| `opsins_7tm_no_prediction.faa` | no topology record |
-| `opsins_7tm_report.csv` | per-sequence coverage, helix pattern, verdict |
-| `filter_summary.tsv` | counts by verdict, by drop reason, and by criterion |
+| `report.csv` | one row per scored sequence -- measurements only, no verdicts |
+| `sequences.faa` | exactly the sequences in the report, gaps stripped |
+| `report.json` | what the report was measured against: profile path and sha1, match columns per TM window, counts in and out |
 | `work_7tm/` | de-gapped input and the `hmmalign` Stockholm |
 | `dtm_out/TMRs.gff3` | this dataset's topology, assembled from the store |
 | `dtm_plan/` | which sequences this run needed to predict (`plan.json`) |
 | `dtm_runs/batch_XXX/` | raw DeepTMHMM output per batch, kept as a log |
 
-In `filter_summary.tsv` the `drop_reason` block partitions the drops
-exclusively; the `criterion_met` block counts sequences meeting each rule and
-therefore **overlaps** -- a sequence tripping two rules is counted under both.
+### Report columns
 
-Adding a dataset is one line under `samples:` in `config/config.yaml`.
+| column | |
+|---|---|
+| `name`, `length` | FASTA header and de-gapped length |
+| `cov_TM1` .. `cov_TM7`, `min_cov` | fraction of each window's profile match columns covered by residues |
+| `has_topology` | 1 if DeepTMHMM has a prediction for this sequence; 0 (and the DeepTMHMM columns blank) if not, e.g. over `max_len` |
+| `n_tm_helices` | DeepTMHMM's raw helix count |
+| `windows_with_helix`, `helix_pattern` | how many / which of the seven windows a predicted helix overlaps, e.g. `1111110` |
+| `n_before_TM1`, `n_after_TM7` | residues outside the 7TM core |
+| `extra_helix_location` | where helices beyond seven fall: `N-terminal`, `interior` (the fusion signature), `C-terminal` |
+| `has_signal_peptide` | DeepTMHMM calls a signal peptide |
+| `res_at_K296` | residue in rhodopsin's retinal-binding lysine column; reported, never filtered on |
+
+Coverage is written to six decimals. Each value is k/n with n of about 20-25,
+so a threshold applied to the report decides exactly as on the unrounded value.
+
+Adding a dataset is one line under `samples:` in `config/config.yaml`, plus the
+matching entry in `../filtering-sequences/config/config.yaml`.
 
 ## DeepTMHMM: one prediction per sequence
 
@@ -101,7 +120,7 @@ Adding a dataset is one line under `samples:` in `config/config.yaml`.
 input FASTA ──> dtm_plan (checkpoint: what is NOT already predicted?)
                    └──> dtm_batch × N (DeepTMHMM, 1 GPU each) ──> resources/dtm_cache/
 input FASTA ──────────────────────> dtm_collect <────────────────────┘
-                                         └──> dtm_out/TMRs.gff3 ──> filter_7tm
+                                         └──> dtm_out/TMRs.gff3 ──> score_7tm
 ```
 
 DeepTMHMM predicts each sequence independently; a batch only amortises loading
@@ -128,8 +147,9 @@ from.
 
 **Long sequences.** ESM-1b takes at most 1,022 residues; DeepTMHMM embeds longer
 sequences in consecutive 1,022-residue windows rather than truncating them, so
-the whole sequence is predicted. Anything over `max_len` is skipped and lands
-in `no_prediction`.
+the whole sequence is predicted. Anything over `max_len` is skipped: it is
+still scored for profile coverage, with `has_topology = 0`, and the filter
+classes it `no_prediction`.
 
 ### Recovery
 

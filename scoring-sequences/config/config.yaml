@@ -29,16 +29,15 @@ deeptmhmm:
   # Each run loads ESM-1b (~2.6 GB) once, so batches should be large.
   # Changing this invalidates nothing -- batches are planned fresh each run.
   batch_size: 1000
-  # Longer sequences are skipped (-> `no_prediction`) rather than predicted.
+  # Longer sequences are skipped rather than predicted: has_topology = 0 in the
+  # report, which the filter classes as `no_prediction`.
   # DeepTMHMM itself handles >1022 aa by embedding in 1022-residue windows.
   max_len: 4000
 
-filter:
-  hmm_cov: 0.7        # min fraction of match columns covered, per TM window
-  dtm_mode: position  # `position` (helix must overlap each window) | `count`
-  min_tm: 7           # only used when dtm_mode == count
-  max_tm: 7           # drop above this many predicted helices; 0 disables
-  max_nterm: 200      # drop above this many residues before TM1; 0 disables
-  # Reserved from snakemake's core budget. filter_7tm.py accepts --threads but
+score:
+  # Reserved from snakemake's core budget. score_7tm.py accepts --threads but
   # does not yet pass it to hmmalign, so this only affects scheduling today.
   threads: 1
+
+# Thresholds are not set here: they belong to ../filtering-sequences, which
+# reads this workflow's report.
