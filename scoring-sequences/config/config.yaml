@@ -5,6 +5,9 @@
 # name -> input protein FASTA. Every sample gets its own results/<name>/ tree.
 samples:
   devivo2023: input/pseudopsins_melatonin_trichoplax_outgroups_devivo2023.fasta
+  # combined_081426_nocontam (2,451) + devivo2023 outgroups (30), minus the
+  # second copy of each devivo duplicate pair (2): 2,479 sequences.
+  input_102326: input/input_102326.fasta
 
 # Criterion A profile. Pin a dated file -- the report is only interpretable
 # against a known profile. See README.md before swapping it.
