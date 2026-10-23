@@ -77,7 +77,10 @@ def main():
     for bi, batch in enumerate(batches):
         with open(os.path.join(a.plan_dir, f"batch_{bi:03d}.faa"), "w") as fh:
             for _, name, seq in batch:
-                fh.write(f">{name}\n{seq}\n")
+                # first token only: every downstream join (collect, the
+                # scoring report) keys on it, so DeepTMHMM's handling of
+                # spaces in a header never matters
+                fh.write(f">{name.split()[0]}\n{seq}\n")
 
     plan = {
         "input": a.fasta,
