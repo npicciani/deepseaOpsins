@@ -1,4 +1,4 @@
-# filtering-sequences -- configuration
+# scoring-sequences -- configuration
 #
 # All paths are relative to this folder; run snakemake from inside it.
 

@@ -1,4 +1,4 @@
-# filtering-sequences: keep opsins that span all seven TM helices
+# scoring-sequences: score opsins for seven-TM completeness
 
 Part of [deepseaOpsins](../README.md).
 
@@ -63,7 +63,7 @@ it. On deepedna2 it is installed system-wide at `/usr/local/bin/deeptmhmm`
 ## Running
 
 ```bash
-cd filtering-sequences
+cd scoring-sequences
 conda activate filtering
 snakemake --cores 4 --resources gpu=2 -n      # dry run
 snakemake --cores 4 --resources gpu=2

@@ -17,7 +17,7 @@
 # (workflow/scripts/dtm_store.py), in a store shared by every sample. A batch
 # is transient: planned fresh each run from whatever the store lacks.
 #
-# Run from inside filtering-sequences/ with the `filtering` env active. The
+# Run from inside scoring-sequences/ with the `filtering` env active. The
 # DeepTMHMM launcher brings its own environment.
 
 import os
