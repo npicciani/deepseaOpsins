@@ -1,0 +1,96 @@
+# Apply the seven-TM filter's thresholds to a scoring report -- the decision half.
+#
+#   ../scoring-sequences/results/<sample>/
+#       report.csv ─────┐
+#       sequences.faa ──┼──> apply_filter ──> keep / review / dropped /
+#       report.json ────┘                     no_prediction FASTAs + verdicts.csv
+#                                                    └──> summarize
+#
+# No alignment, no DeepTMHMM, no GPU: this workflow only reads the report the
+# scoring workflow wrote, so thresholds can be changed and re-applied in
+# seconds. Snakemake re-runs apply_filter when a threshold in the config
+# changes, because the thresholds are rule params.
+#
+# Needs snakemake and nothing else (the scripts are stdlib-only). Run from
+# inside filtering-sequences/.
+
+import re
+from pathlib import Path
+
+from snakemake.exceptions import WorkflowError
+
+configfile: "config/config.yaml"
+
+SCRIPTS = Path(workflow.basedir) / "scripts"
+SAMPLES = config["samples"]
+FILT = config["filter"]
+
+if not SAMPLES:
+    raise WorkflowError("config['samples'] is empty -- nothing to filter")
+for _s, _f in SAMPLES.items():
+    _missing = [k for k in ("report", "sequences") if k not in (_f or {})]
+    if _missing:
+        raise WorkflowError(f"sample {_s!r} has no {', '.join(_missing)} path")
+if FILT["dtm_mode"] not in ("position", "count"):
+    raise WorkflowError(f"filter.dtm_mode must be position or count, "
+                        f"not {FILT['dtm_mode']!r}")
+
+
+wildcard_constraints:
+    sample="|".join(map(re.escape, SAMPLES)),
+
+
+def scoring_inputs(w):
+    s = SAMPLES[w.sample]
+    d = {"report": s["report"], "sequences": s["sequences"]}
+    if s.get("meta"):
+        d["meta"] = s["meta"]
+    return d
+
+
+rule all:
+    input:
+        expand("results/{sample}/opsins_7tm.faa", sample=SAMPLES),
+        expand("results/{sample}/filter_summary.tsv", sample=SAMPLES),
+
+
+rule apply_filter:
+    """Thresholds -> verdict and drop reasons for every scored sequence."""
+    input:
+        unpack(scoring_inputs),
+    output:
+        keep="results/{sample}/opsins_7tm.faa",
+        review="results/{sample}/opsins_7tm_review.faa",
+        dropped="results/{sample}/opsins_7tm_dropped.faa",
+        nopred="results/{sample}/opsins_7tm_no_prediction.faa",
+        verdicts="results/{sample}/opsins_7tm_verdicts.csv",
+        params="results/{sample}/opsins_7tm_params.json",
+    params:
+        prefix=lambda w: f"results/{w.sample}/opsins_7tm",
+        meta=lambda w, input: f"--meta {input.meta}" if "meta" in input.keys() else "",
+        cov=FILT["hmm_cov"],
+        mode=FILT["dtm_mode"],
+        min_tm=FILT["min_tm"],
+        max_tm=FILT["max_tm"],
+        max_nterm=FILT["max_nterm"],
+    log:
+        "logs/{sample}/apply_filter.log",
+    shell:
+        "python {SCRIPTS}/apply_filter.py {input.report} {input.sequences} "
+        "  -o {params.prefix} {params.meta} "
+        "  --hmm-cov {params.cov} --dtm-mode {params.mode} "
+        "  --min-tm {params.min_tm} --max-tm {params.max_tm} "
+        "  --max-nterm {params.max_nterm} &> {log}"
+
+
+rule summarize:
+    """Verdict, exclusive drop_reason, and overlapping per-criterion counts."""
+    input:
+        verdicts="results/{sample}/opsins_7tm_verdicts.csv",
+    output:
+        tsv="results/{sample}/filter_summary.tsv",
+    log:
+        "logs/{sample}/summarize.log",
+    shell:
+        "python {SCRIPTS}/summarize.py {input.verdicts} -o {output.tsv} "
+        "  --sample {wildcards.sample} &> {log}"

@@ -1,0 +1,5 @@
+# Everything here is rebuilt from a scoring report in seconds.
+results/
+logs/
+.snakemake/
+__pycache__/

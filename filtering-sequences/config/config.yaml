@@ -1,0 +1,21 @@
+# filtering-sequences -- configuration
+#
+# All paths are relative to this folder; run snakemake from inside it.
+
+# name -> the three files one scoring-sequences run produces for that sample.
+# They must come from the same run: the filter refuses a report and FASTA that
+# describe different sequences.
+samples:
+  devivo2023:
+    report: ../scoring-sequences/results/devivo2023/report.csv
+    sequences: ../scoring-sequences/results/devivo2023/sequences.faa
+    meta: ../scoring-sequences/results/devivo2023/report.json
+
+# Every decision the filter makes. Changing any of these re-runs only the
+# filter -- seconds -- never the scoring.
+filter:
+  hmm_cov: 0.7        # min fraction of match columns covered, per TM window
+  dtm_mode: position  # `position` (helix must overlap each window) | `count`
+  min_tm: 7           # only used when dtm_mode == count
+  max_tm: 7           # drop above this many predicted helices; 0 disables
+  max_nterm: 200      # drop above this many residues before TM1; 0 disables
